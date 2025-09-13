@@ -1,0 +1,16 @@
+- hosts: all
+  become: yes
+  tasks:
+    - name: Copy SSL certificate to server
+      copy:
+        src: /home/ec2-user/ssl-cert-renewal-automation/cert.pem
+        dest: /etc/ssl/certs/yourdomain.crt
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Restart web service
+      service:
+        name: httpd
+        state: restarted
+
