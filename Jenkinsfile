@@ -9,7 +9,7 @@ pipeline {
         }
         stage('Deploy Certificate') {
             steps {
-                ansiblePlaybook credentialsId: 'your-ansible-cred-id', playbook: 'deploy_cert.yml'
+                sh '/home/ec2-user/.local/bin/ansible-playbook deploy_cert.yml'
             }
         }
     }
