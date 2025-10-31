@@ -1,0 +1,183 @@
+---
+# Ansible playbook: ssl-automation
+# Purpose: Install acme.sh, issue Let's Encrypt certificate using DuckDNS DNS-01,
+# install cert into /etc/nginx/ssl, configure nginx vhost with HTTPS, and ensure
+# auto-renewal reloads nginx.
+
+- name: SSL automation (acme.sh + DuckDNS + Nginx)
+  hosts: ssl_servers
+  become: true
+  vars:
+    domain: ssl-automation.duckdns.org
+    acme_user: ec2-user
+    acme_home: "/home/{{ acme_user }}/.acme.sh"
+    cert_target_dir: /etc/nginx/ssl
+    nginx_conf: /etc/nginx/conf.d/ssl-automation.conf
+    dnssleep: 120
+    acme_server: "https://acme-v02.api.letsencrypt.org/directory"
+
+  pre_tasks:
+    - name: Load DuckDNS token from vault (vault.yml must define duckdns_token)
+      include_vars: vault.yml
+
+    - name: Ensure basic packages are installed (RHEL family)
+      package:
+        name:
+          - nginx
+          - curl
+          - git
+        state: present
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Ensure basic packages are installed (Debian family)
+      apt:
+        name:
+          - nginx
+          - curl
+          - git
+        state: present
+        update_cache: yes
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Ensure nginx ssl directory exists
+      file:
+        path: "{{ cert_target_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+  tasks:
+    - name: Install acme.sh (if not present)
+      become_user: "{{ acme_user }}"
+      shell: |
+        if [ ! -d "{{ acme_home }}" ]; then
+          curl https://get.acme.sh | sh
+        else
+          echo "acme.sh already present"
+        fi
+      args:
+        creates: "{{ acme_home }}"
+
+    - name: Ensure dnsapi plugin exists
+      stat:
+        path: "{{ acme_home }}/dnsapi/dns_duckdns.sh"
+      register: dnsplugin
+
+    - name: Copy dns_duckdns plugin if missing (fallback)
+      become_user: "{{ acme_user }}"
+      copy:
+        src: "{{ playbook_dir }}/dns_duckdns.sh"
+        dest: "{{ acme_home }}/dnsapi/dns_duckdns.sh"
+        mode: '0755'
+      when: not dnsplugin.stat.exists
+
+    - name: Ensure acme.sh cron is present (runs daily)
+      become_user: "{{ acme_user }}"
+      cron:
+        name: "acme.sh cron"
+        minute: 0
+        hour: 0
+        job: "{{ acme_home }}/acme.sh --cron --home '{{ acme_home }}' > /dev/null"
+
+    - name: Ensure DuckDNS token exported in ec2-user profile for renewals
+      lineinfile:
+        path: "/home/{{ acme_user }}/.bashrc"
+        line: "export DuckDNS_Token='{{ duckdns_token }}'"
+        create: yes
+        owner: "{{ acme_user }}"
+        mode: '0644'
+      notify: source bashrc
+
+    - name: Issue/renew certificate with acme.sh using DuckDNS (force)
+      become_user: "{{ acme_user }}"
+      shell: |
+        export DuckDNS_Token='{{ duckdns_token }}'
+        {{ acme_home }}/acme.sh --server {{ acme_server }} --issue --dns dns_duckdns -d {{ domain }} --force --dnssleep {{ dnssleep }}
+      args:
+        creates: "{{ acme_home }}/{{ domain }}_ecc/fullchain.cer"
+      register: acme_issue
+      changed_when: "'Cert success' in acme_issue.stdout or 'Your cert is in' in acme_issue.stdout"
+      failed_when: acme_issue.rc != 0 and "Cert success" not in acme_issue.stdout
+
+    - name: Debug acme result
+      debug:
+        var: acme_issue.stdout_lines
+      when: acme_issue is defined
+
+    - name: Copy fullchain and key to nginx SSL directory
+      copy:
+        src: "{{ acme_home }}/{{ domain }}_ecc/fullchain.cer"
+        dest: "{{ cert_target_dir }}/{{ domain }}.crt"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: reload nginx
+
+    - name: Copy private key to nginx SSL directory
+      copy:
+        src: "{{ acme_home }}/{{ domain }}_ecc/{{ domain }}.key"
+        dest: "{{ cert_target_dir }}/{{ domain }}.key"
+        owner: root
+        group: root
+        mode: '0600'
+      notify: reload nginx
+
+    - name: Create nginx config for domain
+      copy:
+        dest: "{{ nginx_conf }}"
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain }};
+              return 301 https://$host$request_uri;
+          }
+
+          server {
+              listen 443 ssl http2;
+              server_name {{ domain }};
+
+              ssl_certificate     {{ cert_target_dir }}/{{ domain }}.crt;
+              ssl_certificate_key {{ cert_target_dir }}/{{ domain }}.key;
+
+              ssl_protocols TLSv1.2 TLSv1.3;
+              ssl_session_cache shared:SSL:10m;
+              ssl_session_timeout 10m;
+
+              root /usr/share/nginx/html;
+              index index.html;
+
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+
+              location /jenkins/ {
+                  proxy_pass http://127.0.0.1:8080/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_buffering off;
+                  proxy_http_version 1.1;
+                  proxy_set_header Connection "";
+              }
+          }
+      notify: reload nginx
+
+    - name: Ensure nginx enabled and started
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: source bashrc
+      shell: . /home/{{ acme_user }}/.bashrc
+      args:
+        executable: /bin/bash
+
