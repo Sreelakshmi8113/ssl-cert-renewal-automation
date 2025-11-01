@@ -1,0 +1,21 @@
+# runtime artifacts
+approvals.db
+data/
+*.log
+
+# env / secrets
+ssl_approval.env
+/etc/ssl-approval.env
+*.pem
+*.key
+*.crt
+
+# virtualenv & bytecode
+.venv/
+__pycache__/
+*.pyc
+
+# editor / OS junk
+*.swp
+*~
+.DS_Store
