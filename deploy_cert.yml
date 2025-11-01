@@ -1,16 +1,45 @@
-- hosts: all
+- name: Deploy certificate to local nginx
+  hosts: localhost
+  connection: local
   become: yes
+  vars:
+    acme_dir: /home/ec2-user/.acme.sh/ssl-automation.duckdns.org_ecc
+    nginx_ssl_dir: /etc/nginx/ssl
+    cert_src: "{{ acme_dir }}/fullchain.cer"
+    key_src: "{{ acme_dir }}/ssl-automation.duckdns.org.key"
+    cert_dest: "{{ nginx_ssl_dir }}/ssl-automation.crt"
+    key_dest: "{{ nginx_ssl_dir }}/ssl-automation.key"
+
   tasks:
-    - name: Copy SSL certificate to server
+    - name: Ensure nginx ssl directory exists
+      file:
+        path: "{{ nginx_ssl_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Copy fullchain to nginx ssl dir
       copy:
-        src: /home/ec2-user/ssl-cert-renewal-automation/cert.pem
-        dest: /etc/ssl/certs/yourdomain.crt
+        src: "{{ cert_src }}"
+        dest: "{{ cert_dest }}"
         owner: root
         group: root
         mode: '0644'
+      notify: Reload nginx
 
-    - name: Restart web service
-      service:
-        name: httpd
-        state: restarted
+    - name: Copy private key to nginx ssl dir
+      copy:
+        src: "{{ key_src }}"
+        dest: "{{ key_dest }}"
+        owner: root
+        group: root
+        mode: '0640'
+      notify: Reload nginx
 
+  handlers:
+    - name: Reload nginx
+      become: yes
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
