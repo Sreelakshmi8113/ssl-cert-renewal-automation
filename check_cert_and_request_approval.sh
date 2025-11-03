@@ -4,7 +4,7 @@
 set -euo pipefail
 
 DOMAIN="ssl-automation.duckdns.org"
-THRESHOLD_DAYS=90
+THRESHOLD_DAYS=9999
 SENDER_EMAIL="sreejayaksaji@gmail.com"      # SES-verified sender
 OWNER_EMAIL="sreelakshmiksaji492@gmail.com"   # recipient (must be SES-verified if in sandbox)
 APPROVAL_BASE_URL="https://ssl-automation.duckdns.org/approve"  # Nginx will proxy /approve to the approval handler
